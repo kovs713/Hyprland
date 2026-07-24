@@ -11,16 +11,38 @@
 #include "../../desktop/view/window/Window.hpp"
 #include "../../desktop/view/window/WindowPresentation.hpp"
 #include "../../desktop/state/FocusState.hpp"
+#include "../../desktop/state/FadingOutState.hpp"
 #include "../../render/pass/ClearPassElement.hpp"
 #include "../../render/pass/RectPassElement.hpp"
 #include "helpers/cm/ColorManagement.hpp"
 #include "../../managers/fullscreen/FullscreenController.hpp"
+#include "../../protocols/SessionLock.hpp"
+#include "../../errorOverlay/Overlay.hpp"
+#include "../../notification/NotificationOverlay.hpp"
 #include <hyprutils/math/Region.hpp>
 #include <hyprgraphics/egl/Egl.hpp>
+
+#include <algorithm>
 
 using namespace Hyprgraphics::Egl;
 using namespace Screenshare;
 using namespace Desktop::View;
+
+static bool monitorNeedsCleanCapture(PHLMONITOR monitor) {
+    if (!monitor)
+        return false;
+
+    for (const auto& layerLevel : monitor->m_layerSurfaceLayers) {
+        for (const auto& weakLayer : layerLevel) {
+            const auto layer = weakLayer.lock();
+            if (layer && layer->visible() && layer->m_ruleApplicator->omitsFromScreenShare())
+                return true;
+        }
+    }
+
+    return std::ranges::any_of(Desktop::fadingOutState()->fadeouts(),
+                               [monitor](const auto& fadeout) { return fadeout && fadeout->monitor() == monitor && fadeout->omitFromScreenShare(); });
+}
 
 CScreenshareFrame::CScreenshareFrame(WP<CScreenshareSession> session, bool overlayCursor, bool isFirst) :
     m_session(session), m_bufferSize(m_session->bufferSize()), m_overlayCursor(overlayCursor), m_isFirst(isFirst) {
@@ -178,49 +200,135 @@ void CScreenshareFrame::copy() {
         m_callback(RESULT_NOT_COPIED);
 }
 
+bool CScreenshareFrame::renderCleanMonitor(PHLMONITOR monitor) {
+    const bool NEEDS_CLEAN_CAPTURE = monitorNeedsCleanCapture(monitor);
+    if (!NEEDS_CLEAN_CAPTURE) {
+        if (m_session->m_cleanCaptureOmissionActive)
+            LOG(Log::DEBUG, "[clean-capture] No omitted layers remain; returning to the mirror framebuffer");
+
+        m_session->m_cleanCaptureOmissionActive = false;
+        m_session->m_cleanCaptureFallbackLogged = false;
+        return false;
+    }
+
+    if (!m_session->m_cleanCaptureOmissionActive) {
+        LOG(Log::DEBUG, "[clean-capture] Omitted layer detected on monitor {} at {}", monitor->m_name, monitor->m_pixelSize);
+        m_session->m_cleanCaptureOmissionActive = true;
+    }
+
+    if (m_session->m_type != SHARE_MONITOR) {
+        if (m_session->m_type == SHARE_REGION && !m_session->m_cleanCaptureFallbackLogged) {
+            LOG(Log::DEBUG, "[clean-capture] Region capture is not supported in Stage 2; using black fallback");
+            m_session->m_cleanCaptureFallbackLogged = true;
+        }
+        return false;
+    }
+
+    if (monitor->m_transform != WL_OUTPUT_TRANSFORM_NORMAL) {
+        if (!m_session->m_cleanCaptureFallbackLogged)
+            LOG(Log::ERR, "[clean-capture] Output transform {} is not supported yet; using black fallback", sc<int>(monitor->m_transform));
+        m_session->m_cleanCaptureFallbackLogged = true;
+        return false;
+    }
+
+    if (m_bufferSize != monitor->m_pixelSize) {
+        if (!m_session->m_cleanCaptureFallbackLogged)
+            LOG(Log::ERR, "[clean-capture] Buffer size {} does not match output size {}; using black fallback", m_bufferSize, monitor->m_pixelSize);
+        m_session->m_cleanCaptureFallbackLogged = true;
+        return false;
+    }
+
+    if (g_pSessionLockManager->isSessionLocked()) {
+        if (!m_session->m_cleanCaptureFallbackLogged)
+            LOG(Log::WARN, "[clean-capture] Session is locked; using black fallback");
+        m_session->m_cleanCaptureFallbackLogged = true;
+        return false;
+    }
+
+    m_session->m_cleanCaptureFallbackLogged = false;
+
+    const auto PREVIOUS_CLEAN_CAPTURE = g_pHyprRenderer->m_bRenderingCleanCapture;
+    auto       restoreCleanCapture    = Render::CScopeGuard([PREVIOUS_CLEAN_CAPTURE]() { g_pHyprRenderer->m_bRenderingCleanCapture = PREVIOUS_CLEAN_CAPTURE; });
+
+    m_previousBlockSurfaceFeedback            = g_pHyprRenderer->m_bBlockSurfaceFeedback;
+    m_cleanCaptureRendered                    = true;
+    g_pHyprRenderer->m_bBlockSurfaceFeedback  = true;
+    g_pHyprRenderer->m_bRenderingCleanCapture = true;
+
+    const auto NOW       = Time::steadyNow();
+    const auto RENDERBOX = CBox{0, 0, sc<int>(monitor->m_pixelSize.x), sc<int>(monitor->m_pixelSize.y)};
+
+    g_pHyprRenderer->renderWorkspace(monitor, monitor->m_activeWorkspace, NOW, RENDERBOX);
+
+    if (monitor == Desktop::focusState()->monitor()) {
+        Notification::overlay()->draw(monitor);
+        ErrorOverlay::overlay()->draw();
+    }
+
+    if (monitor->m_dpmsBlackOpacity->value() != 0.F) {
+        g_pHyprRenderer->draw(
+            CRectPassElement::SRectData{
+                .box   = RENDERBOX,
+                .color = Colors::BLACK.modifyA(monitor->m_dpmsBlackOpacity->value()),
+            },
+            RENDERBOX);
+    }
+
+    return true;
+}
+
+void CScreenshareFrame::restoreCleanCaptureState() {
+    if (!m_cleanCaptureRendered)
+        return;
+
+    g_pHyprRenderer->m_bBlockSurfaceFeedback = m_previousBlockSurfaceFeedback;
+    m_cleanCaptureRendered                   = false;
+}
+
 void CScreenshareFrame::renderMonitor() {
     if ((m_session->m_type != SHARE_MONITOR && m_session->m_type != SHARE_REGION) || done())
         return;
 
     const auto PMONITOR = m_session->monitor();
 
-    auto       TEXTURE = g_pHyprRenderer->m_renderData.pMonitor->resources()->getMirrorTexture();
-    if (!TEXTURE) {
-        LOG(Log::ERR, "Invalid source texture");
-        return;
+    if (!renderCleanMonitor(PMONITOR)) {
+        auto       TEXTURE = g_pHyprRenderer->m_renderData.pMonitor->resources()->getMirrorTexture();
+        if (!TEXTURE) {
+            LOG(Log::ERR, "Invalid source texture");
+            return;
+        }
+
+        if (!TEXTURE->m_imageDescription)
+            LOG(Log::ERR, "CM: FIXME no source image description for screenshare");
+
+        if (!g_pHyprRenderer->m_renderData.currentFB->imageDescription())
+            LOG(Log::ERR, "CM: FIXME no target image description for screenshare");
+
+        if (TEXTURE->m_imageDescription && g_pHyprRenderer->m_renderData.currentFB->imageDescription())
+            LOG(Log::TRACE, "CM: screenshot renderMonitor {} -> {}", TEXTURE->m_imageDescription->value(), g_pHyprRenderer->m_renderData.currentFB->imageDescription()->value());
+
+        const bool IS_CM_AWARE               = PROTO::colorManagement && PROTO::colorManagement->isClientCMAware(m_session->m_client);
+        g_pHyprRenderer->m_renderData.fbSize = m_bufferSize;
+        g_pHyprRenderer->setProjectionType(Render::RPT_EXPORT);
+        g_pHyprRenderer->m_renderData.transformDamage = false;
+        g_pHyprRenderer->m_renderData.noSimplify      = true;
+        g_pHyprRenderer->setViewport(0, 0, m_bufferSize.x, m_bufferSize.y);
+
+        // render monitor texture
+        CBox       monbox = CBox{{}, PMONITOR->m_transformedSize}.translate(-m_session->m_captureBox.pos());
+
+        const auto OLD                                    = g_pHyprRenderer->m_renderData.renderModif.enabled;
+        g_pHyprRenderer->m_renderData.renderModif.enabled = false;
+        g_pHyprRenderer->startRenderPass();
+        g_pHyprRenderer->draw(
+            CTexPassElement::SRenderData{
+                .tex          = TEXTURE,
+                .box          = monbox,
+                .cmBackToSRGB = !IS_CM_AWARE,
+            },
+            {0, 0, m_bufferSize.x, m_bufferSize.y});
+        g_pHyprRenderer->m_renderData.renderModif.enabled = OLD;
     }
-
-    if (!TEXTURE->m_imageDescription)
-        LOG(Log::ERR, "CM: FIXME no source image description for screenshare");
-
-    if (!g_pHyprRenderer->m_renderData.currentFB->imageDescription())
-        LOG(Log::ERR, "CM: FIXME no target image description for screenshare");
-
-    if (TEXTURE->m_imageDescription && g_pHyprRenderer->m_renderData.currentFB->imageDescription())
-        LOG(Log::TRACE, "CM: screenshot renderMonitor {} -> {}", TEXTURE->m_imageDescription->value(), g_pHyprRenderer->m_renderData.currentFB->imageDescription()->value());
-
-    const bool IS_CM_AWARE               = PROTO::colorManagement && PROTO::colorManagement->isClientCMAware(m_session->m_client);
-    g_pHyprRenderer->m_renderData.fbSize = m_bufferSize;
-    g_pHyprRenderer->setProjectionType(Render::RPT_EXPORT);
-    g_pHyprRenderer->m_renderData.transformDamage = false;
-    g_pHyprRenderer->m_renderData.noSimplify      = true;
-    g_pHyprRenderer->setViewport(0, 0, m_bufferSize.x, m_bufferSize.y);
-
-    // render monitor texture
-    CBox       monbox = CBox{{}, PMONITOR->m_transformedSize}.translate(-m_session->m_captureBox.pos());
-
-    const auto OLD                                    = g_pHyprRenderer->m_renderData.renderModif.enabled;
-    g_pHyprRenderer->m_renderData.renderModif.enabled = false;
-    g_pHyprRenderer->startRenderPass();
-    g_pHyprRenderer->draw(
-        CTexPassElement::SRenderData{
-            .tex          = TEXTURE,
-            .box          = monbox,
-            .cmBackToSRGB = !IS_CM_AWARE,
-        },
-        {0, 0, m_bufferSize.x, m_bufferSize.y});
-    g_pHyprRenderer->m_renderData.renderModif.enabled = OLD;
-
     // render black boxes for noscreenshare
     auto hidePopups = [&](Vector2D popupBaseOffset) {
         return [&, popupBaseOffset](WP<Desktop::View::CPopup> popup, void*) {
@@ -242,7 +350,7 @@ void CScreenshareFrame::renderMonitor() {
     };
 
     for (auto const& l : Desktop::layerState()->layers()) {
-        if (!l->m_ruleApplicator->noScreenShare().valueOrDefault())
+        if (!l->m_ruleApplicator->blocksScreenShare() && (m_cleanCaptureRendered || !l->m_ruleApplicator->omitsFromScreenShare()))
             continue;
 
         if UNLIKELY (!l->mapped() || !l->acceptsInput() || !l->alphaNonZero())
@@ -262,6 +370,17 @@ void CScreenshareFrame::renderMonitor() {
         const Vector2D popupBaseOffset = REALPOS - Vector2D{geom.pos().x, geom.pos().y};
         if (l->popupHead())
             l->popupHead()->breadthfirst(hidePopups(popupBaseOffset), nullptr);
+    }
+
+    if (!m_cleanCaptureRendered) {
+        for (const auto& fadeout : Desktop::fadingOutState()->fadeouts()) {
+            if (!fadeout || fadeout->monitor() != PMONITOR || !fadeout->omitFromScreenShare())
+                continue;
+
+            const auto box = fadeout->renderBox().translate(-m_session->m_captureBox.pos());
+            if (!box.empty())
+                g_pHyprRenderer->draw(CRectPassElement::SRectData{.box = box, .color = Colors::BLACK}, box);
+        }
     }
 
     for (auto const& w : Desktop::windowState()->windows()) {
@@ -423,6 +542,7 @@ bool CScreenshareFrame::copyDmabuf() {
         self->m_callback(RESULT_COPIED);
         self->m_copied = true;
     });
+    restoreCleanCaptureState();
 
     return true;
 }
@@ -455,6 +575,7 @@ bool CScreenshareFrame::copyShm() {
     g_pHyprRenderer->m_renderData.blockScreenShader = true;
 
     g_pHyprRenderer->endRender();
+    restoreCleanCaptureState();
 
     bool readSucceeded = true;
     m_damage.forEachRect([&](const auto& rect) {
@@ -505,6 +626,7 @@ void CScreenshareFrame::storeTempFB() {
     }
 
     g_pHyprRenderer->endRender();
+    restoreCleanCaptureState();
 }
 
 Vector2D CScreenshareFrame::bufferSize() const {

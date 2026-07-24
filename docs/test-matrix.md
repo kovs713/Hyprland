@@ -10,6 +10,33 @@
 The baseline is Hyprland `0.56.0` at
 `36b2e0cfe0c6094dbc47bd42a437431315bb3087`.
 
+## Stage 2 execution record
+
+The correctness-first PoC was built on branch
+`presenter/omit-capture-poc`.
+
+| Check | Status | Evidence/result |
+| --- | --- | --- |
+| Explicit capture mode | PASS | `screen_share_mode` accepts `normal`, `black`, and `omit`; unknown values are rejected by the rule parser |
+| Debug build | PASS | Patched `Hyprland` and `hyprland_gtests` targets built successfully |
+| Formatting | PASS | All changed C++ files pass the repository `clang-format` check |
+| Unit tests | PASS | CTest: 271/271 passed, including two new `LayerRule` mode tests |
+| Config load | PASS | A block-style `layerrule` with `screen_share_mode = omit` loaded in the nested compositor and matched namespace `demo` |
+| Physical output unchanged | PASS | An outer-compositor capture showed the GTK layer over the animated gears |
+| Clean monitor capture | PASS | `grim` whole-output capture showed the live gears with no GTK layer and no black replacement |
+| Live underlay | PASS | Whole-output captures taken at different times had different pixels as the gears rotated |
+| Overlay close/reopen during active sharing | PASS | One direct wlr `capture_output` session stayed alive for 2015 frames while the GTK layer was closed and reopened; the post-reopen control frame was clean |
+| Root/subsurface/popup omission | PASS implementation / PLANNED dedicated client | The capture pass returns before queuing the omitted layer surface tree or its later popup traversal; a popup-producing layer client remains to be exercised |
+| Layer and popup fade-out policy | PASS implementation / PLANNED frame inspection | Fade-out state snapshots the owner layer policy and is skipped by the clean pass; transition frames remain a Stage 4 inspection item |
+| Existing `no_screen_share` | PASS | With both policies present, `no_screen_share` retained priority and produced the existing black rectangle |
+| Region safety fallback | PASS | `wf-recorder` used `capture_output_region`; the omitted bounds were black and the capture log selected the Stage 2 fallback |
+| Clean-render diagnostics | PASS | Grepable `[clean-capture]` diagnostics report activation, deactivation, and fallback reason without per-frame log spam |
+| Graceful nested shutdown | PASS | Test clients stopped and nested Hyprland reached its normal end |
+
+Known test-harness diagnostics are unchanged from Stage 1. Reusing the
+coverage-enabled build directory additionally produced stale `.gcda` checksum
+warnings after source changes; builds and tests still exited successfully.
+
 ## Stage 1 execution record
 
 | Check | Status | Evidence/result |
@@ -61,20 +88,20 @@ and never a frozen snapshot.
 
 | Scenario | Physical output | Capture | Status |
 | --- | --- | --- | --- |
-| No matching layer | Unchanged | Bitwise/visual baseline, negligible overhead | PLANNED |
-| One visible omitted layer | Layer visible | Clean underlay | PLANNED |
+| No matching layer | Unchanged | Bitwise/visual baseline, negligible overhead | PASS basic monitor path; performance measurement PLANNED |
+| One visible omitted layer | Layer visible | Clean underlay | PASS monitor |
 | Multiple omitted layers | All visible | Clean underlay at every omitted subtree | PLANNED |
-| Hidden/unmapped omitted layer | Unchanged | No extra work or damage | PLANNED |
+| Hidden/unmapped omitted layer | Unchanged | No extra work or damage | PASS active monitor close/reopen; detailed damage inspection PLANNED |
 | Included overlay above omitted layer | Both visible | Included overlay retained over clean underlay | PLANNED |
 | Included overlay below omitted layer | Both visible | Included overlay revealed correctly | PLANNED |
 | Translucent omitted layer | Correct blending | No contribution from omitted layer | PLANNED |
-| Omitted layer subsurface | Visible | Root and subsurface tree omitted | PLANNED |
-| Omitted layer popup | Visible | Popup tree omitted | PLANNED |
+| Omitted layer subsurface | Visible | Root and subsurface tree omitted | PASS implementation; dedicated live client PLANNED |
+| Omitted layer popup | Visible | Popup tree omitted | PASS implementation; dedicated live client PLANNED |
 | Included popup from another layer | Visible | Popup retained | PLANNED |
-| Layer fade-out | Visible animation | No transient leak or stale pixels | PLANNED |
+| Layer fade-out | Visible animation | No transient leak or stale pixels | PASS implementation; frame-by-frame inspection PLANNED |
 | Blur behind omitted layer | Physical blur unchanged | Capture scene recomputed without omitted contribution | PLANNED |
-| Existing `no_screen_share` | Visible | Black privacy mask, unchanged semantics | PLANNED regression |
-| Clean-render internal failure | Visible | Black fallback, logged error | PLANNED |
+| Existing `no_screen_share` | Visible | Black privacy mask, unchanged semantics | PASS monitor regression |
+| Clean-render internal failure | Visible | Black fallback, logged error | PASS guarded paths in implementation; forced monitor failure PLANNED |
 
 ## Geometry matrix
 
@@ -118,9 +145,9 @@ black frame, or permanent full-output damage.
 | Output hotplug/remove | Session recovers or closes cleanly | PLANNED |
 | Workspace switch | Correct workspace scene | PLANNED |
 | Fullscreen enter/leave | Correct z-order and underlay | PLANNED |
-| Sharing start while overlay visible | First delivered frame is clean | PLANNED |
-| Overlay opens during sharing | No intermediate leaked frame | PLANNED |
-| Overlay closes during sharing | Underlay remains current, not frozen | PLANNED |
+| Sharing start while overlay visible | First delivered frame is clean | PASS monitor PoC |
+| Overlay opens during sharing | No intermediate leaked frame | PASS session continuity; frame-by-frame leak inspection PLANNED |
+| Overlay closes during sharing | Underlay remains current, not frozen | PASS session continuity and live underlay; frame-by-frame inspection PLANNED |
 | Sharing stop/start loop | No retained resources or stale snapshot | PLANNED |
 | Client buffer resize/renegotiation | Correct dimensions and damage reset | PLANNED |
 
@@ -155,3 +182,9 @@ The correctness-first monitor PoC is ready to advance only when:
 5. failure produces the black fallback and a diagnostic;
 6. build and available tests pass;
 7. the new config option has a linked separate wiki PR plan.
+
+Items 1, 2, 4, and 6 pass for the monitor PoC. Item 3 is implemented in the
+renderer traversal but still needs a dedicated popup/subsurface layer client.
+The black fallback and diagnostics are implemented and region fallback was
+exercised; a forced monitor-internal failure remains to be tested. A separate
+wiki PR is required before proposing the config option upstream.

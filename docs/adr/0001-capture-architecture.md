@@ -1,6 +1,6 @@
 # ADR 0001: Build a clean capture render pass in Hyprland
 
-- Status: Accepted for a Stage 2 correctness PoC
+- Status: Implemented as a Stage 2 correctness PoC
 - Date: 2026-07-24
 - Hyprland baseline:
   `36b2e0cfe0c6094dbc47bd42a437431315bb3087`
@@ -37,7 +37,35 @@ The PoC should:
 - avoid a clean pass when no omitted surface affects the capture;
 - add capture-specific diagnostics and tests before optimization.
 
-This ADR does not authorize Stage 2 implementation.
+## Stage 2 implementation
+
+The PoC adds an explicit layer rule:
+
+```ini
+layerrule {
+    name = presenter-overlay
+    match:namespace = ^presenter$
+    screen_share_mode = omit
+}
+```
+
+`normal` is the default, `black` selects the privacy mask, and `omit` selects
+the clean monitor pass. The existing `no_screen_share` option is unchanged and
+takes safe black-mask priority if both options match.
+
+When a visible omitted layer affects a whole-monitor capture, the screen-share
+frame queues a second compositor scene traversal into the capture target. The
+traversal skips the layer root, its subsurfaces, its popup pass, and captured
+fade-out state. The physical output traversal never enters this capture-only
+mode.
+
+The PoC intentionally supports only normal-transform whole-monitor capture.
+Region capture, transformed outputs, buffer-size mismatch, and session lock use
+the existing black mask as a safe fallback. Region geometry and transforms
+remain Stage 3 work. The capture pass preserves compositor notifications,
+error overlays, and DPMS black opacity. Debug-only overlays and content drawn
+by plugin render-stage hooks are not replayed in the PoC and require an
+explicit policy before upstreaming.
 
 ## Considered directions
 

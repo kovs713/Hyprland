@@ -79,7 +79,9 @@ namespace Screenshare {
         SP<Render::IFramebuffer> m_tempFB;
 
         SP<CEventLoopTimer>      m_shareStopTimer;
-        bool                     m_sharing = false;
+        bool                     m_sharing                    = false;
+        bool                     m_cleanCaptureOmissionActive = false;
+        bool                     m_cleanCaptureFallbackLogged = false;
 
         struct {
             CHyprSignalListener monitorDestroyed;
@@ -174,9 +176,11 @@ namespace Screenshare {
         Vector2D                m_bufferSize = Vector2D(0, 0);
         CRegion                 m_damage; // damage in buffer coords
         bool                    m_shared = false, m_copied = false, m_failed = false;
-        bool                    m_copyInFlight  = false; // a dmabuf copy is issued and waiting on its fence
-        bool                    m_overlayCursor = true;
-        bool                    m_isFirst       = false;
+        bool                    m_copyInFlight                 = false; // a dmabuf copy is issued and waiting on its fence
+        bool                    m_overlayCursor                = true;
+        bool                    m_isFirst                      = false;
+        bool                    m_cleanCaptureRendered         = false;
+        bool                    m_previousBlockSurfaceFeedback = false;
 
         //
         void copy();
@@ -185,6 +189,8 @@ namespace Screenshare {
 
         void render();
         void renderMonitor();
+        bool renderCleanMonitor(PHLMONITOR monitor);
+        void restoreCleanCaptureState();
         void renderMonitorRegion();
         void renderWindow();
 

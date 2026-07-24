@@ -45,6 +45,13 @@ static std::expected<int64_t, std::string> parseAboveLock(const std::string& raw
     return std::clamp(*parsed, int64_t{0}, int64_t{2});
 }
 
+static std::expected<std::string, std::string> parseScreenShareMode(const std::string& raw) {
+    if (raw != "normal" && raw != "black" && raw != "omit")
+        return std::unexpected(std::format("screen_share_mode rule \"{}\" must be one of: normal, black, omit", raw));
+
+    return raw;
+}
+
 static std::expected<LayerRuleEffectValue, std::string> parseLayerRuleEffect(CLayerRuleEffectContainer::storageType e, const std::string& raw) {
     if (layerEffects()->isEffectDynamic(e))
         return std::string{raw};
@@ -80,6 +87,12 @@ static std::expected<LayerRuleEffectValue, std::string> parseLayerRuleEffect(CLa
             if (!parsed)
                 return std::unexpected(parsed.error());
             return std::clamp(*parsed, 0.F, 1.F);
+        }
+        case LAYER_RULE_EFFECT_SCREEN_SHARE_MODE: {
+            auto parsed = parseScreenShareMode(raw);
+            if (!parsed)
+                return std::unexpected(parsed.error());
+            return *parsed;
         }
         case LAYER_RULE_EFFECT_ANIMATION: return std::string{raw};
     }

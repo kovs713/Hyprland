@@ -60,9 +60,18 @@ namespace Desktop::Rule {
         DEFINE_PROP(Config::FLOAT, ignoreAlpha, 0.F)
 
         DEFINE_PROP(std::string, animationStyle, std::string(""))
+        DEFINE_PROP(std::string, screenShareMode, std::string("normal"))
 
 #undef COMMA
 #undef DEFINE_PROP
+
+        bool blocksScreenShare() const {
+            return m_noScreenShare.first.valueOrDefault() || m_screenShareMode.first.valueOrDefault() == "black";
+        }
+
+        bool omitsFromScreenShare() const {
+            return !blocksScreenShare() && m_screenShareMode.first.valueOrDefault() == "omit";
+        }
 
       private:
         PHLLSREF m_ls;

@@ -43,6 +43,8 @@ SP<CPopupFadeout> CPopupFadeout::create(SP<CPopup> popup, SP<Render::IFramebuffe
     auto fadeout           = SP<CPopupFadeout>(new CPopupFadeout());
     fadeout->m_monitor     = MONITOR;
     fadeout->m_framebuffer = snapshot;
+    if (const auto LAYER = popup->layerOwner(); LAYER)
+        fadeout->m_omitFromScreenShare = LAYER->m_ruleApplicator->omitsFromScreenShare();
 
     static CConfigValue PBLURIGNOREA = CConfigValue<Config::FLOAT>("decoration:blur:popups_ignorealpha");
     if (shouldBlurPopup()) {

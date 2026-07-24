@@ -109,8 +109,9 @@ namespace Render {
         virtual void                        endRender(const std::function<void()>& renderingDoneCallback = {}) = 0;
 
         NColorManagement::PImageDescription workBufferImageDescription();
-        bool                                m_bBlockSurfaceFeedback = false;
-        bool                                m_bRenderingSnapshot    = false;
+        bool                                m_bBlockSurfaceFeedback  = false;
+        bool                                m_bRenderingSnapshot     = false;
+        bool                                m_bRenderingCleanCapture = false;
         PHLMONITORREF                       m_mostHzMonitor;
         bool                                m_directScanoutBlocked = false;
 

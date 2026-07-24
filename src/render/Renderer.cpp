@@ -336,7 +336,8 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
     PHLWINDOW  pWorkspaceWindow = nullptr;
     const bool SPECIAL          = pWorkspace->type() == Workspace::eWorkspaceType::SPECIAL;
 
-    Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOWS);
+    if (!m_bRenderingCleanCapture)
+        Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOWS);
 
     // pre-filter renderable windows once for the tiled + floating passes
     std::vector<PHLWINDOW> windows;
@@ -441,7 +442,8 @@ void IHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
     PHLWINDOW  lastWindow;
     const bool SPECIAL = pWorkspace->type() == Workspace::eWorkspaceType::SPECIAL;
 
-    Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOWS);
+    if (!m_bRenderingCleanCapture)
+        Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOWS);
 
     std::vector<PHLWINDOWREF> windows;
     windows.reserve(Desktop::windowState()->windows().size());
@@ -619,7 +621,8 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
     // for plugins
     m_renderData.currentWindow = pWindow;
 
-    Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOW);
+    if (!m_bRenderingCleanCapture)
+        Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOW);
 
     const auto fullAlpha = renderdata.alpha * renderdata.fadeAlpha;
 
@@ -836,7 +839,8 @@ void IHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, const T
         }
     }
 
-    Event::bus()->m_events.render.stage.emit(RENDER_POST_WINDOW);
+    if (!m_bRenderingCleanCapture)
+        Event::bus()->m_events.render.stage.emit(RENDER_POST_WINDOW);
 
     m_renderData.currentWindow.reset();
 }
@@ -940,6 +944,9 @@ void IHyprRenderer::renderLayer(PHLLS pLayer, PHLMONITOR pMonitor, const Time::s
         return;
 
     if (!pLayer->mapped() || !pLayer->acceptsInput() || !pLayer->alphaNonZero())
+        return;
+
+    if (m_bRenderingCleanCapture && pLayer->m_ruleApplicator->omitsFromScreenShare())
         return;
 
     // skip rendering based on abovelock rule and make sure to not render abovelock layers twice
@@ -1141,7 +1148,8 @@ void IHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPA
         }
         renderFadeouts(pMonitor, Desktop::FADEOUT_PLANE_LAYER_BACKGROUND);
 
-        Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
+        if (!m_bRenderingCleanCapture)
+            Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
 
         for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM]) {
             renderLayer(ls.lock(), pMonitor, time);
@@ -1169,7 +1177,8 @@ void IHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPA
         }
         renderFadeouts(pMonitor, Desktop::FADEOUT_PLANE_LAYER_BACKGROUND);
 
-        Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
+        if (!m_bRenderingCleanCapture)
+            Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
 
         for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM]) {
             renderLayer(ls.lock(), pMonitor, time);
@@ -1231,7 +1240,8 @@ void IHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPA
         renderWindow(w, pMonitor, time, true, RENDER_PASS_ALL);
     }
 
-    Event::bus()->m_events.render.stage.emit(RENDER_POST_WINDOWS);
+    if (!m_bRenderingCleanCapture)
+        Event::bus()->m_events.render.stage.emit(RENDER_POST_WINDOWS);
 
     // Render surfaces above windows for monitor
     for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP]) {
@@ -3310,6 +3320,9 @@ void IHyprRenderer::renderFadeouts(PHLMONITOR monitor, Desktop::eFadeoutPlane pl
     std::vector<SP<Desktop::IFadeout>> fadeouts;
     for (auto const& fadeout : Desktop::fadingOutState()->fadeouts()) {
         if (!fadeout || fadeout->monitor() != monitor || fadeout->plane() != plane)
+            continue;
+
+        if (m_bRenderingCleanCapture && fadeout->omitFromScreenShare())
             continue;
 
         if (fadeout->workspace() && fadeout->workspace() != workspace)
