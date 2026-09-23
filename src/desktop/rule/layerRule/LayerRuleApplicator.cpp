@@ -158,3 +158,11 @@ void CLayerRuleApplicator::propertiesChanged(std::underlying_type_t<eRulePropert
     // for plugins
     Event::bus()->m_events.layer.updateRules.emit(m_ls.lock());
 }
+
+bool CLayerRuleApplicator::blocksScreenShare() const {
+    return m_noScreenShare.first.valueOrDefault() || m_screenShareMode.first.valueOrDefault() == "black";
+}
+
+bool CLayerRuleApplicator::omitsFromScreenShare() const {
+    return !blocksScreenShare() && m_screenShareMode.first.valueOrDefault() == "omit";
+}

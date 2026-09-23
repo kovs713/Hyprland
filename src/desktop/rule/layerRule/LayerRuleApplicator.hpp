@@ -65,13 +65,8 @@ namespace Desktop::Rule {
 #undef COMMA
 #undef DEFINE_PROP
 
-        bool blocksScreenShare() const {
-            return m_noScreenShare.first.valueOrDefault() || m_screenShareMode.first.valueOrDefault() == "black";
-        }
-
-        bool omitsFromScreenShare() const {
-            return !blocksScreenShare() && m_screenShareMode.first.valueOrDefault() == "omit";
-        }
+        bool blocksScreenShare() const;
+        bool omitsFromScreenShare() const;
 
       private:
         PHLLSREF m_ls;
