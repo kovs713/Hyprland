@@ -33,7 +33,7 @@ CInputCaptureResource::CInputCaptureResource(SP<CHyprlandInputCaptureV1> resourc
     LOG(Log::INFO, "[input-capture]({}) new session", m_sessionId.c_str());
 
     m_resource->setOnDestroy([this](CHyprlandInputCaptureV1* r) { PROTO::inputCapture->destroyResource(this); }); //Remove & free this session
-    m_resource->setDestroy([this](CHyprlandInputCaptureV1* r) { PROTO::inputCapture->destroyResource(this); });
+    m_resource->setOnDestroy([this](CHyprlandInputCaptureV1* r) { PROTO::inputCapture->destroyResource(this); });
 
     m_resource->setEnable([this](CHyprlandInputCaptureV1* r) { onEnable(); });
     m_resource->setAddBarrier(
