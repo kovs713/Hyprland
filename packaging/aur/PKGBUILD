@@ -1,0 +1,104 @@
+# Maintainer: kovs713 <ovsyannikov.k.k@gmail.com>
+#
+# Fork of hyprwm/Hyprland 0.56.0. The only delta is the layerrule
+# `screen_share_mode` option (normal / black / omit); see
+# /usr/share/doc/hyprland-omit-capture/screen_share_mode.md after install.
+#
+# Deliberately NOT a drop-in for the official package: no
+# provides=('hyprland'), so a depend=('hyprland') elsewhere can never silently
+# swap the compositor under a user.
+
+pkgname=hyprland-omit-capture
+_pkgname=hyprland
+pkgver=0.56.0.omit1
+pkgrel=1
+pkgdesc='Hyprland with a per-layer screen_share_mode rule (normal / black / omit) to keep overlays off screen captures'
+arch=(x86_64 aarch64)
+url='https://github.com/kovs713/Hyprland/tree/feat/omit-capture'
+license=(BSD-3-Clause)
+conflicts=("$_pkgname" "${_pkgname}-git" hyprland-presenter)
+provides=('wayland-compositor')
+depends=(cairo
+         aquamarine libaquamarine.so
+         libgcc
+         libstdc++
+         glibc
+         glib2 libgio-2.0.so libgobject-2.0.so
+         glslang
+         hyprcursor libhyprcursor.so
+         hyprgraphics libhyprgraphics.so
+         hyprland-guiutils
+         hyprlang libhyprlang.so
+         hyprutils libhyprutils.so
+         hyprwayland-scanner
+         hyprwire libhyprwire.so
+         lcms2 liblcms2.so
+         libdrm
+         libglvnd libEGL.so libGLESv2.so
+         libinput
+         libx11
+         libxcb
+         libxcomposite
+         libxcursor
+         libxfixes
+         libxkbcommon libxkbcommon.so
+         libxrender
+         lua
+         mesa
+         muparser
+         opengl-driver
+         pango libpango-1.0.so libpangocairo-1.0.so
+         pixman libpixman-1.so
+         re2 libre2.so
+         tomlplusplus libtomlplusplus.so
+         util-linux-libs libuuid.so
+         wayland libwayland-server.so
+         wayland-protocols
+         xcb-proto
+         xcb-util
+         xcb-util-errors
+         xcb-util-image
+         xcb-util-keysyms
+         xcb-util-renderutil
+         xcb-util-wm
+         xorg-xwayland)
+makedepends=(git
+             cmake
+             cpio
+             glaze
+             hyprland-protocols
+             meson
+             ninja
+             xorgproto)
+optdepends=('cmake: to build and install plugins using hyprpm'
+            'cpio: to build and install plugins using hyprpm'
+            'glaze: to build and install plugins using hyprpm'
+            'hyprland-protocols: to build and install plugins using hyprpm'
+            'hyprshutdown: clean logout and shutdown helper'
+            'meson: to build and install plugins using hyprpm'
+            'uwsm: an advanced way to start desktop compositors as systemd units'
+            'xdg-desktop-portal-hyprland: xdg-desktop-portal backend for hyprland')
+
+# Keep the tag in sync with pkgver by hand: the tag is v0.56.0-omit1, pacman
+# needs the dots. Pinning a tag (not a branch) keeps the build reproducible.
+source=("git+https://github.com/kovs713/Hyprland.git#tag=v0.56.0-omit1")
+sha256sums=('SKIP')
+
+prepare() {
+	cd "$srcdir/Hyprland"
+	sed -i -e '/^release:/{n;s/-D/-DCMAKE_SKIP_RPATH=ON -D/}' Makefile
+}
+
+build() {
+	cd "$srcdir/Hyprland"
+	make release PREFIX=/usr
+}
+
+package() {
+	cd "$srcdir/Hyprland"
+	make DESTDIR="$pkgdir" install
+	rm -fv "$pkgdir/usr/include/hyprland/src/version.h.in"
+	install -Dm0644 -t "$pkgdir/usr/share/licenses/$pkgname/" LICENSE
+	install -Dm0644 "$srcdir/screen_share_mode.md" \
+		"$pkgdir/usr/share/doc/$pkgname/screen_share_mode.md"
+}
