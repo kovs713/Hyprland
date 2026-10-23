@@ -282,6 +282,58 @@ SUBTEST(multimonBAF) {
         EXPECT_CONTAINS(str, "workspace 3 ");
     }
 
+    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-2' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1', on_current_monitor = true })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-3' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '3', on_current_monitor = true })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '4', on_current_monitor = true })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '2', on_current_monitor = true })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '2', on_current_monitor = true })"));
+
+    {
+        auto str = getFromSocket("/activeworkspace");
+        EXPECT_CONTAINS(str, "workspace 4 ");
+        EXPECT_CONTAINS(str, "on monitor HEADLESS-3:");
+    }
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+
+    {
+        auto str = getFromSocket("/activeworkspace");
+        EXPECT_CONTAINS(str, "workspace 4 ");
+        EXPECT_CONTAINS(str, "on monitor HEADLESS-3:");
+    }
+
+    OK(getFromSocket("/eval hl.config({ binds = { workspace_back_and_forth = 2 } })"));
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+
+    // There should be no previous on monitor HEADLESS-2
+    {
+        auto str = getFromSocket("/activeworkspace");
+        EXPECT_CONTAINS(str, "workspace 1 ");
+        EXPECT_CONTAINS(str, "on monitor HEADLESS-2:");
+    }
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '3', on_current_monitor = true })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '3', on_current_monitor = true })"));
+
+    {
+        auto str = getFromSocket("/activeworkspace");
+        EXPECT_CONTAINS(str, "workspace 1 ");
+        EXPECT_CONTAINS(str, "on monitor HEADLESS-2:");
+    }
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+
+    {
+        auto str = getFromSocket("/activeworkspace");
+        EXPECT_CONTAINS(str, "workspace 3 ");
+        EXPECT_CONTAINS(str, "on monitor HEADLESS-2:");
+    }
+
     Tests::killAllWindows();
 }
 
@@ -1257,7 +1309,7 @@ TEST_CASE(workspacesDistinctTiledAndFloatGaps) {
 }
 
 SUBTEST(switchWorkspaceAndCheckActiveWindowFocusIsLostAndRestored) {
-    std::string resp1 = getFromSocket("/activewindow");
+    std::string resp1 = Tests::getWindowID(getFromSocket("/activewindow"));
     ASSERT_NOT("Invalid", resp1);
 
     OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = 2 })"));
@@ -1265,7 +1317,7 @@ SUBTEST(switchWorkspaceAndCheckActiveWindowFocusIsLostAndRestored) {
     EXPECT("Invalid", resp2);
     OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = \"previous\" })"));
     resp2 = getFromSocket("/activewindow");
-    ASSERT(resp1, resp2);
+    ASSERT(resp1, Tests::getWindowID(resp2));
 }
 
 TEST_CASE(workspaceSwitchUnfocusesWindowFromOldWorkspace) {

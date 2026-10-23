@@ -49,11 +49,15 @@ SP<CLayerFadeout> CLayerFadeout::create(PHLLS layer, SP<Render::IFramebuffer> sn
     if (!MONITOR)
         return nullptr;
 
-    auto fadeout                   = SP<CLayerFadeout>(new CLayerFadeout());
-    fadeout->m_monitor             = MONITOR;
-    fadeout->m_framebuffer         = snapshot;
-    fadeout->m_geometry            = layer->m_geometry;
-    fadeout->m_zIndex              = layerZIndex(layer);
+    auto fadeout           = SP<CLayerFadeout>(new CLayerFadeout());
+    fadeout->m_monitor     = MONITOR;
+    fadeout->m_framebuffer = snapshot;
+    fadeout->m_geometry    = layer->m_geometry;
+    fadeout->m_zIndex      = layerZIndex(layer);
+    fadeout->m_source      = {
+             .type          = eFadeoutSource::LAYER,
+             .noScreenShare = layer->m_ruleApplicator->blocksScreenShare(),
+    };
     fadeout->m_omitFromScreenShare = layer->m_ruleApplicator->omitsFromScreenShare();
 
     static auto PDIMAROUND = CConfigValue<Config::FLOAT>("decoration:dim_around");

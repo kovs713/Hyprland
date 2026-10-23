@@ -27,6 +27,10 @@ namespace Config {
     class CWorkspaceRule;
 }
 
+namespace Render {
+    struct SWindowRenderPresentation;
+}
+
 namespace Layout {
     class ITarget;
     class CWindowTarget;
@@ -44,6 +48,7 @@ namespace Desktop::View {
     class CWindowGroupMembership;
     class CWindowMetadata;
     class CWindowPresentation;
+    class CWindowStateEventTracker;
     class CWindowSwallowController;
 
     enum eWindowUpdateSource : uint8_t {
@@ -141,6 +146,7 @@ namespace Desktop::View {
         const CWindowFullscreenPolicy&                            fullscreenPolicy() const;
         CWindowGroupMembership&                                   grouping();
         const CWindowGroupMembership&                             grouping() const;
+        CWindowStateEventTracker&                                 stateTracker();
 
         virtual eViewType                                         type() const override;
         virtual bool                                              mapped() const override;
@@ -151,6 +157,7 @@ namespace Desktop::View {
         virtual Types::CMultiAVarContainer<float, uint8_t>&       alpha() override;
         virtual const Types::CMultiAVarContainer<float, uint8_t>& alpha() const override;
         virtual std::optional<uint8_t>                            alphaGenericToKey(eAlphaModifiableProp p) override;
+        virtual bool                                              cantLockCursor() const override;
 
         struct {
             CSignalT<> destroy;
@@ -197,11 +204,13 @@ namespace Desktop::View {
         void                       updateToplevel();
         void                       updateSurfaceScaleTransformDetails(bool force = false);
         void                       moveToWorkspace(PHLWORKSPACE);
+        void                       syncInitialWorkspaceToken(PHLWORKSPACE);
         void                       onUnmap();
         void                       onMap();
         void                       setHidden(bool hidden);
         bool                       isHidden() const;
         bool                       shouldBlur() const;
+        bool                       shouldBlur(const Render::SWindowRenderPresentation& presentation) const;
         bool                       isAllowedOverFullscreen() const;
         bool                       isBlockedByFullscreen() const;
         bool                       isFadingOutUnderFullscreen() const;
@@ -242,7 +251,6 @@ namespace Desktop::View {
         SP<Layout::ITarget> layoutTarget();
         SP<Layout::ITarget> layoutTarget() const;
         bool                isFloating() const;
-        bool                cantLockCursor() const;
         void                sendClose();
         void                requestClientFullscreen(const SClientFullscreenRequest& request);
 
@@ -293,6 +301,7 @@ namespace Desktop::View {
         UP<CWindowMetadata>          m_metadata;
         UP<CWindowPresentation>      m_presentation;
         UP<CWindowEffectsController> m_effects;
+        UP<CWindowStateEventTracker> m_stateTracker;
         SP<Layout::CWindowTarget>    m_target;
         struct {
             CHyprSignalListener map;

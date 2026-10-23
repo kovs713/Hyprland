@@ -442,6 +442,7 @@ std::vector<SP<IValue>> Values::getConfigValues() {
          * input:tablet:
          */
 
+        MS<Bool>("input:tablet:enabled", "Whether input is enabled for tablets.", true, {.refresh = Supplementary::REFRESH_INPUT_DEVICES}),
         MS<Int>("input:tablet:transform", "transform the input from tablets.", 0, {.min = 0, .max = 6, .refresh = Supplementary::REFRESH_INPUT_DEVICES}),
         MS<String>("input:tablet:output", "the monitor to bind tablets.", STRVAL_EMPTY, {.refresh = Supplementary::REFRESH_INPUT_DEVICES}),
         MS<Vec2>("input:tablet:region_position", "position of the mapped region in monitor layout.", Config::VEC2{},
@@ -570,6 +571,7 @@ std::vector<SP<IValue>> Values::getConfigValues() {
         MS<Bool>("misc:name_vk_after_proc", "Name virtual keyboards after the processes that create them.", true),
         MS<Bool>("misc:always_follow_on_dnd", "Will make mouse focus follow the mouse when drag and dropping.", true),
         MS<Bool>("misc:layers_hog_keyboard_focus", "If true, will make keyboard-interactive layers keep their focus on mouse move.", true),
+        MS<Bool>("misc:allow_new_top_layers_over_existing_fullscreen", "If true, allows new top layers to go over a fullscreen window.", true),
         MS<Bool>("misc:animate_manual_resizes", "If true, will animate manual window resizes/moves", false),
         MS<Bool>("misc:animate_mouse_windowdragging", "If true, will animate windows being dragged by mouse.", false),
         MS<Bool>("misc:disable_autoreload", "If true, the config will not reload automatically on save.", false, {.refresh = Supplementary::REFRESH_CONFIG_WATCHER}),
@@ -611,7 +613,8 @@ std::vector<SP<IValue>> Values::getConfigValues() {
 
         MS<Bool>("binds:pass_mouse_when_bound", "if disabled, will not pass the mouse events to apps / dragging windows around if a keybind has been triggered.", false),
         MS<Int>("binds:scroll_event_delay", "in ms, how many ms to wait after a scroll event to allow passing another one for the binds.", 300, {.min = 0, .max = 2000}),
-        MS<Bool>("binds:workspace_back_and_forth", "If enabled, an attempt to switch to the currently focused workspace will instead switch to the previous workspace.", false),
+        MS<Int>("binds:workspace_back_and_forth", "An attempt to switch to the currently focused workspace will instead switch to the previous workspace.", 0,
+                {.min = 0, .max = 2, .map = OptionMap{{"disabled", 0}, {"all_monitors", 1}, {"per_monitor", 2}}}),
         MS<Bool>("binds:hide_special_on_workspace_change", "If enabled, changing the active workspace will hide the special workspace on the monitor.", false),
         MS<Bool>("binds:allow_workspace_cycles", "If enabled, workspaces don't forget their previous workspace.", false),
         MS<Int>("binds:workspace_center_on", "Whether switching workspaces should center the cursor on the workspace (0) or on the last active window (1)", 1,

@@ -4,6 +4,11 @@ let
   hyprland = flake.hyprland-with-tests;
 in
 {
+  binary-wrapper = pkgs.runCommand "hyprland-wrapper-is-elf" { } ''
+    isELF ${flake.hyprland}/bin/Hyprland
+    touch $out
+  '';
+
   tests = pkgs.testers.runNixOSTest {
     name = "hyprland-tests";
 

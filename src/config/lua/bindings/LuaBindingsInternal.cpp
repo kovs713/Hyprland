@@ -386,6 +386,43 @@ int Internal::pushErrorResult(lua_State* L, const CA::SActionError& e) {
     return 1;
 }
 
+Keybinds::SBindResult Internal::bindResultFromTable(lua_State* L, int idx) {
+    Keybinds::SBindResult result;
+    if (!lua_istable(L, idx))
+        return result;
+
+    idx = lua_absindex(L, idx);
+
+    // raw: this runs outside a protected call, so a metamethod must not get the chance to raise
+    const auto FIELD = [L, idx](const char* name) {
+        lua_pushstring(L, name);
+        lua_rawget(L, idx);
+    };
+
+    FIELD("pass_event");
+    result.passEvent = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+
+    FIELD("ok");
+    if (lua_isboolean(L, -1))
+        result.success = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+
+    FIELD("request_release");
+    if (lua_toboolean(L, -1))
+        result.followUp = Keybinds::BIND_FOLLOW_UP_TRIGGER_RELEASE;
+    lua_pop(L, 1);
+
+    if (!result.success) {
+        FIELD("error");
+        if (lua_isstring(L, -1))
+            result.error = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    }
+
+    return result;
+}
+
 int Internal::checkResult(lua_State* L, const CA::ActionResult& r) {
     if (!r) {
         auto error    = r.error();
@@ -395,21 +432,6 @@ int Internal::checkResult(lua_State* L, const CA::ActionResult& r) {
     }
 
     return Internal::pushSuccessResult(L, *r);
-}
-
-PHLWORKSPACE Internal::resolveWorkspaceStr(const std::string& args) {
-    const auto TARGET = State::Workspace::resolver()->getWorkspaceTargetFromString(args);
-    if (!TARGET.valid())
-        return nullptr;
-
-    auto ws = State::Workspace::state()->find(TARGET);
-    if (!ws) {
-        const auto PMONITOR = Desktop::focusState()->monitor();
-        if (PMONITOR)
-            ws = State::Workspace::state()->create(TARGET, PMONITOR, false);
-    }
-
-    return ws;
 }
 
 PHLMONITOR Internal::resolveMonitorStr(const std::string& args) {

@@ -1,5 +1,10 @@
 #pragma once
 
+namespace Render {
+    class CRenderContext;
+    class CSceneResources;
+}
+
 #include <vector>
 #include "../../helpers/memory/Memory.hpp"
 #include "../../protocols/types/Buffer.hpp"
@@ -12,11 +17,14 @@
 class CWLPointerResource;
 
 namespace Screenshare {
+    class CWorkspaceCaptureSource;
+
     enum eScreenshareType : uint8_t {
         SHARE_NONE,
         SHARE_MONITOR,
         SHARE_WINDOW,
         SHARE_REGION,
+        SHARE_WORKSPACE,
     };
 
     enum eScreenshareError : uint8_t {
@@ -46,6 +54,7 @@ namespace Screenshare {
         UP<CScreenshareFrame> nextFrame(bool overlayCursor);
         void                  stop();
         bool                  isActive();
+        bool                  isStale();
 
         // constraints
         const std::vector<DRMFormat>& allowedFormats() const;
@@ -61,27 +70,31 @@ namespace Screenshare {
         CScreenshareSession(PHLMONITOR monitor, wl_client* client);
         CScreenshareSession(PHLMONITOR monitor, CBox captureRegion, wl_client* client);
         CScreenshareSession(PHLWINDOW window, wl_client* client);
+        CScreenshareSession(SP<CWorkspaceCaptureSource> workspace, wl_client* client);
 
-        WP<CScreenshareSession>  m_self;
-        bool                     m_stopped = false;
+        WP<CScreenshareSession>     m_self;
+        bool                        m_stopped = false;
 
-        eScreenshareType         m_type = SHARE_NONE;
-        PHLMONITORREF            m_monitor;
-        PHLWINDOWREF             m_window;
-        CBox                     m_captureBox = {}; // given capture area in logical coordinates (see xdg_output)
+        eScreenshareType            m_type = SHARE_NONE;
+        PHLMONITORREF               m_monitor;
+        PHLWINDOWREF                m_window;
+        SP<CWorkspaceCaptureSource> m_workspace;
+        CBox                        m_captureBox = {}; // given capture area in logical coordinates (see xdg_output)
 
-        wl_client*               m_client = nullptr;
-        std::string              m_name   = "";
+        wl_client*                  m_client = nullptr;
+        std::string                 m_name   = "";
 
-        std::vector<DRMFormat>   m_formats;
-        Vector2D                 m_bufferSize = Vector2D(0, 0);
+        std::vector<DRMFormat>      m_formats;
+        Vector2D                    m_bufferSize = Vector2D(0, 0);
 
-        SP<Render::IFramebuffer> m_tempFB;
+        SP<Render::IFramebuffer>    m_tempFB;
+        SP<Render::CSceneResources> m_sceneResources;
 
-        SP<CEventLoopTimer>      m_shareStopTimer;
-        bool                     m_sharing                    = false;
-        bool                     m_cleanCaptureOmissionActive = false;
-        bool                     m_cleanCaptureFallbackLogged = false;
+        SP<CEventLoopTimer>         m_shareStopTimer;
+        bool                        m_sharing                    = false;
+        bool                        m_cleanCaptureOmissionActive = false;
+        bool                        m_cleanCaptureFallbackLogged = false;
+        bool                        m_stale                      = false;
 
         struct {
             CHyprSignalListener monitorDestroyed;
@@ -89,6 +102,7 @@ namespace Screenshare {
             CHyprSignalListener windowDestroyed;
             CHyprSignalListener windowSizeChanged;
             CHyprSignalListener windowMonitorChanged;
+            CHyprSignalListener workspaceChanged;
         } m_listeners;
 
         void screenshareEvents(bool started);
@@ -147,7 +161,7 @@ namespace Screenshare {
         } m_listeners;
 
         bool copy();
-        void render();
+        void render(Render::CRenderContext& ctx);
         void calculateConstraints();
 
         friend class CScreenshareFrame;
@@ -176,23 +190,24 @@ namespace Screenshare {
         Vector2D                m_bufferSize = Vector2D(0, 0);
         CRegion                 m_damage; // damage in buffer coords
         bool                    m_shared = false, m_copied = false, m_failed = false;
-        bool                    m_copyInFlight                 = false; // a dmabuf copy is issued and waiting on its fence
-        bool                    m_overlayCursor                = true;
-        bool                    m_isFirst                      = false;
-        bool                    m_cleanCaptureRendered         = false;
-        bool                    m_previousBlockSurfaceFeedback = false;
+        bool                    m_copyInFlight         = false; // a dmabuf copy is issued and waiting on its fence
+        bool                    m_overlayCursor        = true;
+        bool                    m_isFirst              = false;
+        bool                    m_cleanCaptureRendered = false;
 
         //
         void copy();
         bool copyDmabuf();
         bool copyShm();
+        bool beginCopy(SP<Render::IFramebuffer> framebuffer = nullptr);
 
-        void render();
-        void renderMonitor();
-        bool renderCleanMonitor(PHLMONITOR monitor);
-        void restoreCleanCaptureState();
-        void renderMonitorRegion();
-        void renderWindow();
+        bool needsCleanMonitor() const;
+        bool renderCleanMonitor(Render::CRenderContext& ctx, PHLMONITOR monitor);
+        void render(Render::CRenderContext& ctx);
+        void renderMonitor(Render::CRenderContext& ctx);
+        void renderMonitorRegion(Render::CRenderContext& ctx);
+        void renderWindow(Render::CRenderContext& ctx);
+        void renderWorkspace(Render::CRenderContext& ctx);
 
         void storeTempFB();
 
@@ -222,17 +237,21 @@ namespace Screenshare {
         UP<CScreenshareSession> newSession(wl_client* client, PHLMONITOR monitor);
         UP<CScreenshareSession> newSession(wl_client* client, PHLMONITOR monitor, CBox captureRegion);
         UP<CScreenshareSession> newSession(wl_client* client, PHLWINDOW window);
+        UP<CScreenshareSession> newSession(wl_client* client, SP<CWorkspaceCaptureSource> workspace);
 
         WP<CScreenshareSession> getManagedSession(wl_client* client, PHLMONITOR monitor);
         WP<CScreenshareSession> getManagedSession(wl_client* client, PHLMONITOR monitor, CBox captureBox);
         WP<CScreenshareSession> getManagedSession(wl_client* client, PHLWINDOW window);
+        WP<CScreenshareSession> getManagedSession(wl_client* client, SP<CWorkspaceCaptureSource> workspace);
 
         UP<CCursorshareSession> newCursorSession(wl_client* client, WP<CWLPointerResource> pointer);
 
-        void                    onOutputCommit(PHLMONITOR monitor);
+        void                    onOutputCommit(PHLMONITOR monitor, bool copyFBPrepared = true);
         bool                    isOutputBeingSSd(PHLMONITOR monitor);
+        bool                    isOutputDSBlocked(PHLMONITOR monitor);
         bool                    outputNeedsCopyFB(PHLMONITOR monitor);
         SOutputCopyFBState      outputCopyFBState(PHLMONITOR monitor);
+        bool                    needsWorkspaceCaptureSnapshot(PHLWINDOW window) const;
 
       private:
         std::vector<WP<CScreenshareSession>> m_sessions;
@@ -247,7 +266,7 @@ namespace Screenshare {
         };
 
         std::vector<UP<SManagedSession>> m_managedSessions;
-        WP<CScreenshareSession>          getManagedSession(eScreenshareType type, wl_client* client, PHLMONITOR monitor, PHLWINDOW window, CBox captureBox);
+        WP<CScreenshareSession> getManagedSession(eScreenshareType type, wl_client* client, PHLMONITOR monitor, PHLWINDOW window, SP<CWorkspaceCaptureSource> ws, CBox captureBox);
 
         friend class CScreenshareSession;
     };
@@ -269,6 +288,7 @@ struct std::formatter<Screenshare::eScreenshareType> : std::formatter<std::strin
             case Screenshare::SHARE_MONITOR: return formatter<string>::format("monitor", ctx);
             case Screenshare::SHARE_WINDOW: return formatter<string>::format("window", ctx);
             case Screenshare::SHARE_REGION: return formatter<string>::format("region", ctx);
+            case Screenshare::SHARE_WORKSPACE: return formatter<string>::format("workspace", ctx);
             case Screenshare::SHARE_NONE: return formatter<string>::format("ERR NONE", ctx);
         }
         return formatter<string>::format("error", ctx);

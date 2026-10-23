@@ -21,6 +21,7 @@
 #include "WindowGroupMembership.hpp"
 #include "WindowMetadata.hpp"
 #include "WindowPresentation.hpp"
+#include "WindowStateTracker.hpp"
 #include "WindowSwallowController.hpp"
 #include "../LayerSurface.hpp"
 #include "../Popup.hpp"
@@ -55,6 +56,7 @@
 #include "../../../helpers/Color.hpp"
 #include "../../../helpers/math/Expression.hpp"
 #include "../../../render/Renderer.hpp"
+#include "../../../render/scene/SceneSelection.hpp"
 #include "../../../ipc/s2/S2.hpp"
 #include "../../../managers/input/InputManager.hpp"
 #include "../../../pointer/PointerController.hpp"
@@ -152,7 +154,7 @@ void CWindow::attachBackendListeners() {
 CWindow::CWindow(UP<IWindowBackend> backend) :
     IView(CWLSurface::create()), m_grouping(makeUnique<CWindowGroupMembership>(*this)), m_swallowing(makeUnique<CWindowSwallowController>(*this)),
     m_fullscreenPolicy(makeUnique<CWindowFullscreenPolicy>()), m_backend(std::move(backend)), m_metadata(makeUnique<CWindowMetadata>()),
-    m_presentation(makeUnique<CWindowPresentation>(*this)), m_effects(makeUnique<CWindowEffectsController>(*this)) {
+    m_presentation(makeUnique<CWindowPresentation>(*this)), m_effects(makeUnique<CWindowEffectsController>(*this)), m_stateTracker(makeUnique<CWindowStateEventTracker>(*this)) {
     ;
 }
 
@@ -239,7 +241,7 @@ bool CWindow::desktopComponent() const {
 }
 
 std::optional<CBox> CWindow::surfaceLogicalBox() const {
-    if (!mapped() || !acceptsInput() || !alphaNonZero())
+    if (!mapped() || !acceptsInput())
         return std::nullopt;
 
     return getWindowMainSurfaceBox();
@@ -421,29 +423,35 @@ void CWindow::updateSurfaceScaleTransformDetails(bool force) {
         nullptr);
 }
 
-void CWindow::moveToWorkspace(PHLWORKSPACE pWorkspace) {
-    if (!pWorkspace || m_workspace == pWorkspace)
+void CWindow::syncInitialWorkspaceToken(PHLWORKSPACE pWorkspace) {
+    if (m_initialWorkspaceToken.empty() || !pWorkspace)
         return;
 
     static auto PINITIALWSTRACKING = CConfigValue<Config::INTEGER>("misc:initial_workspace_tracking");
 
-    if (!m_initialWorkspaceToken.empty()) {
-        const auto TOKEN = g_pTokenManager->getToken(m_initialWorkspaceToken);
-        if (TOKEN) {
-            if (*PINITIALWSTRACKING == 2) {
-                // persistent
-                try {
-                    SInitialWorkspaceToken token = std::any_cast<SInitialWorkspaceToken>(TOKEN->m_data);
-                    if (token.primaryOwner == m_self) {
-                        token.workspaceID      = pWorkspace->id();
-                        token.workspaceAddress = pWorkspace->addressableName();
-                        token.workspaceType    = pWorkspace->type();
-                        TOKEN->m_data          = token;
-                    }
-                } catch (const std::bad_any_cast& e) { ; }
-            }
-        }
-    }
+    if (*PINITIALWSTRACKING != 2)
+        return;
+
+    const auto TOKEN = g_pTokenManager->getToken(m_initialWorkspaceToken);
+    if (!TOKEN)
+        return;
+
+    try {
+        auto token = std::any_cast<SInitialWorkspaceToken>(TOKEN->m_data);
+        if (token.primaryOwner != m_self)
+            return;
+        token.workspaceID      = pWorkspace->id();
+        token.workspaceAddress = pWorkspace->addressableName();
+        token.workspaceType    = pWorkspace->type();
+        TOKEN->m_data          = token;
+    } catch (const std::bad_any_cast& e) { ; }
+}
+
+void CWindow::moveToWorkspace(PHLWORKSPACE pWorkspace) {
+    if (!pWorkspace || m_workspace == pWorkspace)
+        return;
+
+    syncInitialWorkspaceToken(pWorkspace);
 
     static auto PCLOSEONLASTSPECIAL = CConfigValue<Config::INTEGER>("misc:close_special_on_empty");
 
@@ -616,11 +624,15 @@ bool CWindow::isHidden() const {
 }
 
 bool CWindow::shouldBlur() const {
+    return shouldBlur(presentation().renderPresentation());
+}
+
+bool CWindow::shouldBlur(const Render::SWindowRenderPresentation& presentation) const {
     static auto PBLUR = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
     if (!*PBLUR)
         return false;
 
-    const bool DONT_BLUR = m_ruleApplicator->noBlur().valueOrDefault() || m_ruleApplicator->RGBX().valueOrDefault() || presentation().opaque();
+    const bool DONT_BLUR = m_ruleApplicator->noBlur().valueOrDefault() || m_ruleApplicator->RGBX().valueOrDefault() || this->presentation().opaque(presentation);
     if (DONT_BLUR)
         return false;
 
@@ -1413,6 +1425,8 @@ void CWindow::mapWindow() {
 
     PMONITOR = m_monitor.lock();
 
+    syncInitialWorkspaceToken(m_workspace);
+
     m_swallowing->reserveCandidate();
 
     // emit the IPC event before the layout might focus the window to avoid a focus event first
@@ -1581,6 +1595,7 @@ void CWindow::mapWindow() {
     if (m_workspace)
         m_workspace->updateWindows();
 
+    m_stateTracker->start();
     Event::bus()->m_events.window.openLate.emit(m_self.lock());
 }
 
@@ -1600,6 +1615,7 @@ void CWindow::unmapWindow() {
 
     const auto PMONITOR = m_monitor.lock();
 
+    m_stateTracker->stop();
     m_events.unmap.emit();
     IPC::Socket2::sock()->postEvent({"closewindow", std::format("{:x}", m_self.lock())});
     Event::bus()->m_events.window.close.emit(m_self.lock());
@@ -1622,9 +1638,10 @@ void CWindow::unmapWindow() {
     // Allow the renderer to catch the last frame.
     const auto SNAPSHOT =
         g_pHyprRenderer->shouldRenderWindow(m_self.lock()) && !m_ruleApplicator->noAnim().valueOrDefault() ? g_pHyprRenderer->makeSnapshotFB(m_self.lock()) : nullptr;
+    const auto WORKSPACE_SNAPSHOT = !m_ruleApplicator->noAnim().valueOrDefault() ? g_pHyprRenderer->makeSnapshotFB(m_self.lock(), Render::eSceneMode::WORKSPACE_WINDOWS) : nullptr;
 
-    bool      wasLastWindow = WAS_FOCUSED;
-    PHLWINDOW nextInGroup   = RESTORED_SWALLOW_WINDOW ? RESTORED_SWALLOW_WINDOW : [this] -> PHLWINDOW {
+    bool       wasLastWindow = WAS_FOCUSED;
+    PHLWINDOW  nextInGroup   = RESTORED_SWALLOW_WINDOW ? RESTORED_SWALLOW_WINDOW : [this] -> PHLWINDOW {
         if (!m_grouping->group())
             return nullptr;
 
@@ -1722,7 +1739,7 @@ void CWindow::unmapWindow() {
     m_realSize->setConfig(Config::animationTree()->getAnimationPropertyConfig("windowsOut"));
     m_presentation->alpha(WINDOW_ALPHA_FADE)->setConfig(Config::animationTree()->getAnimationPropertyConfig("fadeOut"));
 
-    Desktop::fadingOutState()->add(CWindowFadeout::create(m_self.lock(), SNAPSHOT, FADEOUTALPHA));
+    Desktop::fadingOutState()->add(CWindowFadeout::create(m_self.lock(), SNAPSHOT, FADEOUTALPHA, WORKSPACE_SNAPSHOT));
 
     // recheck idle inhibitors
     g_pInputManager->recheckIdleInhibitorStatus();
@@ -1783,7 +1800,7 @@ void CWindow::commitWindow(bool initialCommit) {
 
     // tearing: if solitary, redraw it. This still might be a single surface window
     if (PMONITOR && PMONITOR->m_solitaryClient.lock() == m_self.lock() && canBeTorn() && PMONITOR->m_tearingState.canTear && wlSurface()->resource()->m_current.texture &&
-        !PMONITOR->isTearingBlocked() && HADDAMAGE) {
+        HADDAMAGE) {
 
         if (PMONITOR->m_tearingState.busy)
             PMONITOR->m_tearingState.frameScheduledWhileBusy = true;
@@ -1797,6 +1814,7 @@ void CWindow::commitWindow(bool initialCommit) {
 void CWindow::destroyWindow() {
     LOG(Log::DEBUG, "{:c} destroyed, queueing.", m_self.lock());
 
+    m_stateTracker->stop();
     m_swallowing->onDestroy();
 
     if (m_self.lock() == Desktop::focusState()->window()) {
@@ -1931,6 +1949,11 @@ bool CWindow::isFloating() const {
 }
 
 bool CWindow::cantLockCursor() const {
+    // a window being interactively moved or resized ignores its pointer lock. the lock would otherwise warp
+    // the cursor back to the constraint hint every frame, so the window could never be dragged (e.g. gamescope).
+    if (const auto DRAG = g_layoutManager->dragController()->target(); DRAG && DRAG->window() == m_self)
+        return true;
+
     return m_target->cantLockCursor();
 }
 
@@ -1940,6 +1963,10 @@ CWindowGroupMembership& CWindow::grouping() {
 
 const CWindowGroupMembership& CWindow::grouping() const {
     return *m_grouping;
+}
+
+CWindowStateEventTracker& CWindow::stateTracker() {
+    return *m_stateTracker;
 }
 
 void CWindow::sendClose() {

@@ -293,7 +293,6 @@ void CMonitor::onConnect(bool noRule) {
 
         m_output->state->resetExplicitFences();
         m_output->state->setEnabled(false);
-        m_usedAsyncBuffers.clear();
 
         if (!m_state.commit())
             LOG(Log::ERR, "Couldn't commit disabled state on output {}", m_name);
@@ -334,6 +333,12 @@ void CMonitor::onConnect(bool noRule) {
     m_damage.setSize(m_transformedSize);
 
     LOG(Log::DEBUG, "Added new monitor with name {} at {:j0} with size {:j0}, pointer {:x}", m_name, m_position, m_pixelSize, rc<uintptr_t>(m_output.get()));
+
+    // Arrange monitors before handing workspaces back to this monitor. A freshly created monitor has an unset
+    // position (-1, -1) until it's arranged, and moveWorkspaceToMonitor translates floating windows relative to
+    // the target's position. CMonitor::moveTo deliberately doesn't shift windows when moving away from the unset
+    // position, so arranging afterwards would leave returning floating windows outside of the monitor.
+    State::monitorLayoutController()->arrange();
 
     if (!isMirror())
         State::Workspace::monitorConnected(m_self.lock());
@@ -507,14 +512,16 @@ static NColorManagement::eTransferFunction chooseTF(NTransferFunction::eTF tf) {
 }
 
 void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdrEotf) {
+    // SDR presets must not carry EDID HDR metadata, or clients see headroom an SDR transfer function can't encode
+    const bool                                                        hdrPreset           = cmType == NCMType::CM_HDR || cmType == NCMType::CM_HDR_EDID;
     auto                                                              oldImageDescription = m_imageDescription;
     const auto                                                        chosenSdrEotf       = chooseTF(cmSdrEotf);
 
     const auto                                                        masteringPrimaries  = getMasteringPrimaries();
-    const NColorManagement::SImageDescription::SPCMasteringLuminances masteringLuminances = getMasteringLuminances();
+    const NColorManagement::SImageDescription::SPCMasteringLuminances masteringLuminances = hdrPreset ? getMasteringLuminances() : SImageDescription::SPCMasteringLuminances{};
 
-    const auto                                                        maxFALL = this->maxFALL();
-    const auto                                                        maxCLL  = this->maxCLL();
+    const auto                                                        maxFALL = hdrPreset ? this->maxFALL() : 0;
+    const auto                                                        maxCLL  = hdrPreset ? this->maxCLL() : 0;
 
     switch (cmType) {
         case NCMType::CM_SRGB:
@@ -602,7 +609,7 @@ void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdr
             break;
         default: UNREACHABLE();
     }
-    if ((minLuminance() >= 0 || maxLuminance() > 0) && (cmType == NCMType::CM_HDR || cmType == NCMType::CM_HDR_EDID))
+    if ((minLuminance() >= 0 || maxLuminance() > 0) && hdrPreset)
         m_imageDescription = m_imageDescription->with({
             .min       = minLuminance() >= 0 ? minLuminance() : m_imageDescription->value().luminances.min, //
             .max       = maxLuminance() > 0 ? maxLuminance() : m_imageDescription->value().luminances.max,  //
@@ -1365,8 +1372,9 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
     if (pWorkspace == m_activeWorkspace)
         return;
 
+    auto constraintGuard = g_pInputManager->pointerConstraints().suspend();
+
     if (!internal) {
-        g_pInputManager->unconstrainMouse();
         g_pInputManager->m_emptyFocusCursorSet = false;
         g_pInputManager->releaseAllMouseButtons();
     }
@@ -1429,7 +1437,7 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
         }
     }
 
-    // set all LSes as not above fullscreen on workspace changes
+    // Reset layer surfaces state on workspace change
     for (auto const& ls : Desktop::layerState()->layers()) {
         if (ls->m_monitor == m_self)
             ls->m_flags &= ~LAYER_FLAG_ABOVE_FULLSCREEN;
@@ -1476,6 +1484,8 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace, bool noFocus)
     setSpecialWorkspaceVisualState(!!pWorkspace);
 
     g_pHyprRenderer->damageMonitor(m_self.lock());
+
+    auto constraintGuard = g_pInputManager->pointerConstraints().suspend();
 
     if (!pWorkspace) {
         // remove special if exists
@@ -1544,7 +1554,7 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace, bool noFocus)
         IPC::Socket2::sock()->postEvent({"activespecial", std::format(",{}", PMONITOR->m_name)});
         IPC::Socket2::sock()->postEvent({"activespecialv2", std::format(",,{}", PMONITOR->m_name)});
 
-        // Reset layer surfaces on the old monitor when special workspace is stolen
+        // Reset layer surfaces state on the old monitor when special workspace is stolen
         for (auto const& ls : Desktop::layerState()->layers()) {
             if (ls->m_monitor == PMONITOR)
                 ls->m_flags &= ~LAYER_FLAG_ABOVE_FULLSCREEN;
@@ -1794,14 +1804,8 @@ uint32_t CMonitor::isSolitaryBlocked(bool full) {
             return reasons;
     }
 
-    if (!m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY].empty()) {
-        reasons |= SC_OVERLAYS;
-        if (!full)
-            return reasons;
-    }
-
-    for (auto const& topls : m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP]) {
-        if (topls->alpha()[LS_ALPHA_FADE]->value() != 0.F) {
+    for (auto const& overlayls : m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY]) {
+        if (overlayls->alpha()[LS_ALPHA_FADE]->goal() != 0.F) {
             reasons |= SC_OVERLAYS;
             if (!full)
                 return reasons;
@@ -1809,7 +1813,7 @@ uint32_t CMonitor::isSolitaryBlocked(bool full) {
     }
 
     for (auto const& fadeout : Desktop::fadingOutState()->fadeouts()) {
-        if (!fadeout || fadeout->monitor() != m_self)
+        if (!fadeout || fadeout->monitor() != m_self || fadeout->plane() < Desktop::eFadeoutPlane::FADEOUT_PLANE_WINDOW_OVER_FULLSCREEN)
             continue;
 
         reasons |= SC_FADEOUT;
@@ -1876,7 +1880,8 @@ uint8_t CMonitor::isTearingBlocked(bool full) {
         }
     }
 
-    if (g_pHyprRenderer->m_renderData.mouseZoomFactor != 1.0) {
+    if (CMonitorZoomController::zoomFactor(m_cursorZoom->value(), m_zoomAnimProgress->value(),
+                                           m_self == State::monitorState()->query().vec(Pointer::mgr()->untransformedPosition()).run()) != 1.F) {
         reasons |= TC_ZOOM;
         if (!full) {
             LOG(Log::WARN, "Tearing commit requested but scale factor is not 1, ignoring");
@@ -1966,7 +1971,7 @@ uint16_t CMonitor::isDSBlocked(bool full) {
             return reasons;
     }
 
-    if (g_pHyprRenderer->m_directScanoutBlocked) {
+    if (Screenshare::mgr()->isOutputDSBlocked(m_self.lock())) {
         reasons |= DS_BLOCK_RECORD;
         if (!full)
             return reasons;
@@ -2271,7 +2276,6 @@ void CMonitor::setDPMS(bool on) {
 
                 // commit DPMS to disable the monitor, it's fully black now
                 commitDPMSState(false);
-                m_usedAsyncBuffers.clear();
             },
             true);
     }
@@ -2280,8 +2284,6 @@ void CMonitor::setDPMS(bool on) {
 void CMonitor::commitDPMSState(bool state) {
     m_output->state->resetExplicitFences();
     m_output->state->setEnabled(state);
-    if (!state)
-        m_usedAsyncBuffers.clear();
 
     if (!m_state.commit()) {
         LOG(Log::ERR, "Couldn't commit output {} for DPMS = {}, will retry.", m_name, state);
@@ -2297,8 +2299,6 @@ void CMonitor::commitDPMSState(bool state) {
 
                 m_output->state->resetExplicitFences();
                 m_output->state->setEnabled(m_dpmsStatus);
-                if (!m_dpmsStatus)
-                    m_usedAsyncBuffers.clear();
 
                 if (!m_state.commit()) {
                     LOG(Log::ERR, "Couldn't retry committing output {} for DPMS = {}", m_name, m_dpmsStatus);
@@ -2477,6 +2477,8 @@ bool CMonitor::canNoShaderCM(bool forDSmode) {
     return (
         isCompatibleTF(SRC_DESC_VALUE.transferFunction, DST_DESC->value().transferFunction) //
         && SRC_DESC_VALUE.transferFunctionPower == DST_DESC->value().transferFunctionPower  //
+        && SRC_DESC_VALUE.getTFMinLuminance() == DST_DESC->value().getTFMinLuminance()      //
+        && SRC_DESC_VALUE.getTFMaxLuminance() == DST_DESC->value().getTFMaxLuminance()      //
         && (!inHDR() || SRC_DESC_VALUE.luminances == DST_DESC->value().luminances)
         // not used by shaders atm
         // && SRC_DESC_VALUE.masteringLuminances == m_imageDescription->value().masteringLuminances && SRC_DESC_VALUE.maxCLL == m_imageDescription->value().maxCLL && SRC_DESC_VALUE.maxFALL == m_imageDescription->value().maxFALL

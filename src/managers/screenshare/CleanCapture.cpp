@@ -17,7 +17,11 @@ using namespace Screenshare;
 // All omit-from-capture logic lives in this TU on purpose: upstream rewrites
 // ScreenshareFrame.cpp regularly, and keeping the feature here shrinks every
 // future merge down to the 3-line hook in renderMonitor().
-static bool monitorNeedsCleanCapture(PHLMONITOR monitor) {
+bool CScreenshareFrame::needsCleanMonitor() const {
+    if (m_session->m_type != SHARE_MONITOR && m_session->m_type != SHARE_REGION)
+        return false;
+
+    const auto monitor = m_session->monitor();
     if (!monitor)
         return false;
 
@@ -33,8 +37,8 @@ static bool monitorNeedsCleanCapture(PHLMONITOR monitor) {
                                [monitor](const auto& fadeout) { return fadeout && fadeout->monitor() == monitor && fadeout->omitFromScreenShare(); });
 }
 
-bool CScreenshareFrame::renderCleanMonitor(PHLMONITOR monitor) {
-    const bool NEEDS_CLEAN_CAPTURE = monitorNeedsCleanCapture(monitor);
+bool CScreenshareFrame::renderCleanMonitor(Render::CRenderContext& ctx, PHLMONITOR monitor) {
+    const bool NEEDS_CLEAN_CAPTURE = needsCleanMonitor();
     if (!NEEDS_CLEAN_CAPTURE) {
         if (m_session->m_cleanCaptureOmissionActive)
             LOG(Log::DEBUG, "[clean-capture] No omitted layers remain; returning to the mirror framebuffer");
@@ -78,42 +82,39 @@ bool CScreenshareFrame::renderCleanMonitor(PHLMONITOR monitor) {
         return false;
     }
 
+    if (!ctx.readOnlyEffects()) {
+        if (!m_session->m_cleanCaptureFallbackLogged)
+            LOG(Log::ERR, "[clean-capture] Isolated render setup failed; using black fallback");
+        m_session->m_cleanCaptureFallbackLogged = true;
+        return false;
+    }
+
     m_session->m_cleanCaptureFallbackLogged = false;
 
-    const auto PREVIOUS_CLEAN_CAPTURE = g_pHyprRenderer->m_bRenderingCleanCapture;
-    auto       restoreCleanCapture    = Render::CScopeGuard([PREVIOUS_CLEAN_CAPTURE]() { g_pHyprRenderer->m_bRenderingCleanCapture = PREVIOUS_CLEAN_CAPTURE; });
-
-    m_previousBlockSurfaceFeedback            = g_pHyprRenderer->m_bBlockSurfaceFeedback;
-    m_cleanCaptureRendered                    = true;
-    g_pHyprRenderer->m_bBlockSurfaceFeedback  = true;
-    g_pHyprRenderer->m_bRenderingCleanCapture = true;
+    // Context flags survive pass execution and reset with endRender/abortRender.
+    m_cleanCaptureRendered      = true;
+    ctx.m_blockSurfaceFeedback  = true;
+    ctx.m_renderingCapture      = true;
+    ctx.m_renderingCleanCapture = true;
 
     const auto NOW       = Time::steadyNow();
     const auto RENDERBOX = CBox{0, 0, sc<int>(monitor->m_pixelSize.x), sc<int>(monitor->m_pixelSize.y)};
 
-    g_pHyprRenderer->renderWorkspace(monitor, monitor->m_activeWorkspace, NOW, RENDERBOX);
+    g_pHyprRenderer->startRenderPass(ctx);
+    g_pHyprRenderer->renderWorkspace(ctx, monitor, monitor->m_activeWorkspace, NOW, RENDERBOX);
 
     if (monitor == Desktop::focusState()->monitor()) {
-        Notification::overlay()->draw(monitor);
-        ErrorOverlay::overlay()->draw();
+        Notification::overlay()->draw(ctx, monitor);
+        ErrorOverlay::overlay()->draw(ctx);
     }
 
     if (monitor->m_dpmsBlackOpacity->value() != 0.F) {
-        g_pHyprRenderer->draw(
-            CRectPassElement::SRectData{
-                .box   = RENDERBOX,
-                .color = Colors::BLACK.modifyA(monitor->m_dpmsBlackOpacity->value()),
-            },
-            RENDERBOX);
+        g_pHyprRenderer->addPassElement(ctx,
+                                        makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+                                            .box   = RENDERBOX,
+                                            .color = Colors::BLACK.modifyA(monitor->m_dpmsBlackOpacity->value()),
+                                        }));
     }
 
     return true;
-}
-
-void CScreenshareFrame::restoreCleanCaptureState() {
-    if (!m_cleanCaptureRendered)
-        return;
-
-    g_pHyprRenderer->m_bBlockSurfaceFeedback = m_previousBlockSurfaceFeedback;
-    m_cleanCaptureRendered                   = false;
 }
